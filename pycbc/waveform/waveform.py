@@ -342,7 +342,11 @@ def td_approximants(scheme=_scheme.mgr.state):
     """Return a list containing the available time domain approximants for
        the given processing scheme.
     """
-    return list(td_wav[type(scheme)].keys())
+    return list(td_wav[type(scheme)].keys()) + [
+        "IMRESIGMAHM",
+        "IMRESIGMA",
+        "InspiralESIGMAHM",
+    ]
 
 def fd_approximants(scheme=_scheme.mgr.state):
     """Return a list containing the available fourier domain approximants for
@@ -586,17 +590,40 @@ def get_td_waveform(template=None, **kwargs):
         The cross polarization of the waveform.
     """
     input_params = props(template, **kwargs)
-    wav_gen = td_wav[type(_scheme.mgr.state)]
-    if input_params['approximant'] not in wav_gen:
-        raise ValueError("Approximant %s not available" %
-                            (input_params['approximant']))
-    wav_gen = wav_gen[input_params['approximant']]
-    if hasattr(wav_gen, 'required'):
-        required = wav_gen.required
+    if "ESIGMA" in input_params["approximant"]:
+        from gwnr.waveform import enigma_utils
+
+        hp, hc = None, None
+        if input_params["approximant"] == "IMRESIGMAHM":
+            hp, hc = enigma_utils.get_imr_enigma_waveform(**input_params)
+        if input_params["approximant"] == "IMRESIGMA":
+            hp, hc = enigma_utils.get_imr_enigma_waveform(
+                **input_params, modes_to_use=[(2, 2)]
+            )
+        if input_params["approximant"] == "InspiralESIGMAHM":
+            _, hp, hc = enigma_utils.get_inspiral_enigma_waveform(**input_params)
+        if input_params["approximant"] == "InspiralESIGMA":
+            _, hp, hc = enigma_utils.get_inspiral_enigma_waveform(
+                **input_params, modes_to_use=[(2, 2)]
+            )
+        if hp is None or hc is None:
+            raise IOError(
+                f"Approximant {input_params['approximant']} not supported"
+            )
+        print(f"ESIGMA length; {len(hp)}")
+        return hp, hc
     else:
-        required = parameters.td_required
-    check_args(input_params, required)
-    return wav_gen(**input_params)
+        wav_gen = td_wav[type(_scheme.mgr.state)]
+        if input_params['approximant'] not in wav_gen:
+            raise ValueError("Approximant %s not available" %
+                                (input_params['approximant']))
+        wav_gen = wav_gen[input_params['approximant']]
+        if hasattr(wav_gen, 'required'):
+            required = wav_gen.required
+        else:
+            required = parameters.td_required
+        check_args(input_params, required)
+        return wav_gen(**input_params)
 
 get_td_waveform.__doc__ = get_td_waveform.__doc__.format(
     params=parameters.td_waveform_params.docstr(prefix="    ",
@@ -1304,8 +1331,31 @@ def get_two_pol_waveform_filter(outplus, outcross, template, **kwargs):
         # N: number of time samples required
         N = (n-1)*2
         delta_f = 1.0 / (N * input_params['delta_t'])
-        wav_gen = td_wav[type(_scheme.mgr.state)]
-        hp, hc = wav_gen[input_params['approximant']](**input_params)
+
+        if "ESIGMA" in input_params["approximant"]:
+            from gwnr.waveform import enigma_utils
+
+            hp, hc = None, None
+            if input_params["approximant"] == "IMRESIGMAHM":
+                hp, hc = enigma_utils.get_imr_enigma_waveform(**input_params)
+            if input_params["approximant"] == "IMRESIGMA":
+                hp, hc = enigma_utils.get_imr_enigma_waveform(
+                    **input_params, modes_to_use=[(2, 2)]
+                )
+            if input_params["approximant"] == "InspiralESIGMAHM":
+                _, hp, hc = enigma_utils.get_inspiral_enigma_waveform(**input_params)
+            if input_params["approximant"] == "InspiralESIGMA":
+                _, hp, hc = enigma_utils.get_inspiral_enigma_waveform(
+                    **input_params, modes_to_use=[(2, 2)]
+                )
+            if hp is None or hc is None:
+                raise IOError(
+                    f"Approximant {input_params['approximant']} not supported"
+                )
+            print(f"ESIGMA length; {len(hp)}")
+        else:
+            wav_gen = td_wav[type(_scheme.mgr.state)]
+            hp, hc = wav_gen[input_params['approximant']](**input_params)
         # taper the time series hp if required
         if 'taper' in input_params.keys() and \
                 input_params['taper'] is not None:
