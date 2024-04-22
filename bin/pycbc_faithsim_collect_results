@@ -105,7 +105,7 @@ for i in range(len(match_files)):
         pdata[field] = md[field]
 
     for field in bfields:
-        if field not in mfields:
+        if field not in mfields and field in bt.columnnames:
             pdata[field] = bt.getColumnByName(field).asarray()
 
     data = np.append(data, pdata)
