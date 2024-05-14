@@ -610,7 +610,6 @@ def get_td_waveform(template=None, **kwargs):
             raise IOError(
                 f"Approximant {input_params['approximant']} not supported"
             )
-        print(f"ESIGMA length; {len(hp)}")
         return hp, hc
     else:
         wav_gen = td_wav[type(_scheme.mgr.state)]
