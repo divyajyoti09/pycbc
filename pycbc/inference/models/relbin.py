@@ -39,7 +39,8 @@ from pycbc.types import Array, TimeSeries
 from .gaussian_noise import BaseGaussianNoise
 from .relbin_cpu import (likelihood_parts, likelihood_parts_v,
                          likelihood_parts_multi, likelihood_parts_multi_v,
-                         likelihood_parts_det, likelihood_parts_vector,
+                         likelihood_parts_det, likelihood_parts_det_multi,
+                         likelihood_parts_vector,
                          likelihood_parts_v_pol,
                          likelihood_parts_v_time,
                          likelihood_parts_v_pol_time,
@@ -211,6 +212,9 @@ class Relative(DistMarg, BaseGaussianNoise):
         self.fid_params = self.static_params.copy()
         self.fid_params.update(fiducial_params)
 
+        # the flag used in `_loglr`
+        self.return_sh_hh = False
+
         for k in self.static_params:
             if self.fid_params[k] == 'REPLACE':
                self.fid_params.pop(k)
@@ -221,7 +225,6 @@ class Relative(DistMarg, BaseGaussianNoise):
             self.f[ifo] = numpy.array(d0.sample_frequencies)
             self.df[ifo] = d0.delta_f
             self.end_time[ifo] = float(d0.end_time)
-            # self.det[ifo] = Detector(ifo)
 
             # generate fiducial waveform
             f_lo = self.kmin[ifo] * self.df[ifo]
@@ -240,7 +243,7 @@ class Relative(DistMarg, BaseGaussianNoise):
                                                     sample_points=fpoints,
                                                     **self.fid_params)
                 curr_wav = wave[ifo]
-                self.ta[ifo] = 0
+                self.ta[ifo] = 0.
             else:
                 fid_hp, fid_hc = get_fd_waveform_sequence(sample_points=fpoints,
                                                           **self.fid_params)
@@ -362,6 +365,7 @@ class Relative(DistMarg, BaseGaussianNoise):
             atimes = self.fid_params["tc"]
             if self.still_needs_det_response:
                 self.lik = likelihood_parts_det
+                self.mlik = likelihood_parts_det_multi
             else:
                 self.lik = likelihood_parts
                 self.mlik = likelihood_parts_multi
@@ -490,23 +494,38 @@ class Relative(DistMarg, BaseGaussianNoise):
         if not hasattr(self, 'hihj'):
             self.calculate_hihjs(models)
 
-        # finally add in the lognl term from this model
-        for m1, m2 in itertools.combinations(models, 2):
-            for det in self.data:
-                a0, a1, fedge = self.hihj[(m1, m2)][det]
+        if self.still_needs_det_response:
+            for m1, m2 in itertools.combinations(models, 2):
+                for det in self.data:
+                    a0, a1, fedge = self.hihj[(m1, m2)][det]
 
-                fp, fc, dtc, hp, hc, h00 = m1._current_wf_parts[det]
-                fp2, fc2, dtc2, hp2, hc2, h002 = m2._current_wf_parts[det]
+                    dtc, channel, h00 = m1._current_wf_parts[det]
+                    dtc2, channel2, h002 = m2._current_wf_parts[det]
 
-                h1h2 = self.mlik(fedge,
-                                 fp, fc, dtc, hp, hc, h00,
-                                 fp2, fc2, dtc2, hp2, hc2, h002,
-                                 a0, a1)
-                loglr += - h1h2.real # This is -0.5 * re(<h1|h2> + <h2|h1>)
+                    c1c2 = self.mlik(fedge,
+                                     dtc, channel, h00,
+                                     dtc2, channel2, h002,
+                                     a0, a1)
+                    loglr += - c1c2.real # This is -0.5 * re(<h1|h2> + <h2|h1>)
+        else:
+            # finally add in the lognl term from this model
+            for m1, m2 in itertools.combinations(models, 2):
+                for det in self.data:
+                    a0, a1, fedge = self.hihj[(m1, m2)][det]
+
+                    fp, fc, dtc, hp, hc, h00 = m1._current_wf_parts[det]
+                    fp2, fc2, dtc2, hp2, hc2, h002 = m2._current_wf_parts[det]
+
+                    h1h2 = self.mlik(fedge,
+                                     fp, fc, dtc, hp, hc, h00,
+                                     fp2, fc2, dtc2, hp2, hc2, h002,
+                                     a0, a1)
+                    loglr += - h1h2.real # This is -0.5 * re(<h1|h2> + <h2|h1>)
         return loglr + self.lognl
 
     def _loglr(self):
         r"""Computes the log likelihood ratio,
+        or inner product <s|h> and <h|h> if `self.return_sh_hh` is True.
 
         .. math::
 
@@ -520,6 +539,9 @@ class Relative(DistMarg, BaseGaussianNoise):
         -------
         float
             The value of the log likelihood ratio.
+        or
+        tuple
+            The inner product (<s|h>, <h|h>).
         """
         # get model params
         p = self.current_params
@@ -541,10 +563,13 @@ class Relative(DistMarg, BaseGaussianNoise):
             # with detector response. Otherwise, skip detector response.
 
             if self.still_needs_det_response:
+                dtc = 0.
+
                 channel = wfs[ifo].numpy()
-                filter_i, norm_i = lik(freqs, 0.0, channel, h00,
+                filter_i, norm_i = lik(freqs, dtc, channel, h00,
                                        sdat['a0'], sdat['a1'],
                                        sdat['b0'], sdat['b1'])
+                self._current_wf_parts[ifo] = (dtc, channel, h00)
             else:
                 hp, hc = wfs[ifo]
                 det = self.det[ifo]
@@ -570,8 +595,12 @@ class Relative(DistMarg, BaseGaussianNoise):
 
             filt += filter_i
             norm += norm_i
-        loglr = self.marginalize_loglr(filt, norm)
-        return loglr
+
+        if self.return_sh_hh:
+            results = (filt, norm)
+        else:
+            results = self.marginalize_loglr(filt, norm)
+        return results
 
     def write_metadata(self, fp, group=None):
         """Adds writing the fiducial parameters and epsilon to file's attrs.
@@ -792,6 +821,7 @@ class RelativeTimeDom(RelativeTime):
 
     def _loglr(self):
         r"""Computes the log likelihood ratio,
+        or inner product <s|h> and <h|h> if `self.return_sh_hh` is True.
 
         .. math::
 
@@ -805,6 +835,9 @@ class RelativeTimeDom(RelativeTime):
         -------
         float
             The value of the log likelihood ratio.
+        or
+        tuple
+            The inner product (<s|h>, <h|h>).
         """
         # calculate <d-h|d-h> = <h|h> - 2<h|d> + <d|d> up to a constant
         p = self.current_params
@@ -832,14 +865,16 @@ class RelativeTimeDom(RelativeTime):
                                                        0, p['tc'])
             dts = p['tc'] + dt
             f = (fp + 1.0j * fc) * pol_phase
-
             # Note, this includes complex conjugation already
             # as our stored inner products were hp* x data
             htf = (f.real * ip + 1.0j * f.imag * ic)
-
             sh = self.sh[ifo].at_time(dts, interpolate='quadratic')
             sh_total += sh * htf
             hh_total += self.hh[ifo] * abs(htf) ** 2.0
 
         loglr = self.marginalize_loglr(sh_total, hh_total)
-        return loglr
+        if self.return_sh_hh:
+            results = (sh_total, hh_total)
+        else:
+            results = loglr
+        return results

@@ -318,6 +318,98 @@ class CustomTransform(BaseTransform):
         return cls(inputs, outputs, transform_functions, jacobian=jacobian)
 
 
+class CustomTransformMultiOutputs(CustomTransform):
+    """Allows for any transform to be defined. Based on CustomTransform,
+    but also supports multi-returning value functions.
+
+    Parameters
+    ----------
+    input_args : (list of) str
+        The names of the input parameters.
+    output_args : (list of) str
+        The names of the output parameters.
+    transform_functions : dict
+        Dictionary mapping input args to a string giving a function call;
+        e.g., ``{'q': 'q_from_mass1_mass2(mass1, mass2)'}``.
+    jacobian : str, optional
+        String giving a jacobian function. The function must be in terms of
+        the input arguments.
+    """
+
+    name = "custom_multi"
+
+    def __init__(self, input_args, output_args, transform_functions,
+                 jacobian=None):
+        super(CustomTransformMultiOutputs, self).__init__(
+            input_args, output_args, transform_functions, jacobian)
+
+    def transform(self, maps):
+        """Applies the transform functions to the given maps object.
+        Parameters
+        ----------
+        maps : dict, or FieldArray
+        Returns
+        -------
+        dict or FieldArray
+            A map object containing the transformed variables, along with the
+            original variables. The type of the output will be the same as the
+            input.
+        """
+        if self.transform_functions is None:
+            raise NotImplementedError("no transform function(s) provided")
+        # copy values to scratch
+        self._copytoscratch(maps)
+        # ensure that we return the same data type in each dict
+        getslice = self._getslice(maps)
+        # evaluate the functions
+        # func[0] is the function itself, func[1] is the index,
+        # this supports multiple returning values function
+        out = {
+                p: self._scratch[func[0]][func[1]][getslice] if
+                len(self._scratch[func[0]]) > 1 else
+                self._scratch[func[0]][getslice]
+                for p, func in self.transform_functions.items()
+            }
+        return self.format_output(maps, out)
+
+    @classmethod
+    def from_config(cls, cp, section, outputs):
+        """Loads a CustomTransformMultiOutputs from the given config file.
+
+        Example section:
+
+        .. code-block:: ini
+
+            [{section}-outvar1+outvar2]
+            name = custom_multi
+            inputs = inputvar1, inputvar2
+            outvar1, outvar2 = func1(inputs)
+            jacobian = func2(inputs)
+        """
+        tag = outputs
+        outputs = list(outputs.split(VARARGS_DELIM))
+        all_vars = ", ".join(outputs)
+        inputs = map(str.strip,
+                     cp.get_opt_tag(section, "inputs", tag).split(","))
+        # get the functions for each output
+        transform_functions = {}
+        output_index = slice(None, None, None)
+        for var in outputs:
+            # check if option can be cast as a float
+            try:
+                func = cp.get_opt_tag(section, var, tag)
+            except Exception:
+                func = cp.get_opt_tag(section, all_vars, tag)
+                output_index = slice(outputs.index(var), outputs.index(var)+1)
+            transform_functions[var] = [func, output_index]
+        s = "-".join([section, tag])
+        if cp.has_option(s, "jacobian"):
+            jacobian = cp.get_opt_tag(section, "jacobian", tag)
+        else:
+            jacobian = None
+        return cls(inputs, outputs, transform_functions, jacobian=jacobian)
+
+
 #
 # =============================================================================
 #
@@ -1468,6 +1560,402 @@ class LambdaFromMultipleTOVFiles(BaseTransform):
         )
 
 
+class GEOToSSB(BaseTransform):
+    """Converts arrival time, sky localization, and polarization angle in the
+    geocentric frame to the corresponding values in the SSB frame."""
+
+    name = "geo_to_ssb"
+
+    default_params_name = {
+        'default_tc_geo': parameters.tc,
+        'default_longitude_geo': parameters.ra,
+        'default_latitude_geo': parameters.dec,
+        'default_polarization_geo': parameters.polarization,
+        'default_tc_ssb': parameters.tc,
+        'default_longitude_ssb': parameters.eclipticlongitude,
+        'default_latitude_ssb': parameters.eclipticlatitude,
+        'default_polarization_ssb': parameters.polarization
+    }
+
+    def __init__(
+        self, tc_geo_param=None, longitude_geo_param=None,
+        latitude_geo_param=None, polarization_geo_param=None,
+        tc_ssb_param=None, longitude_ssb_param=None,
+        latitude_ssb_param=None, polarization_ssb_param=None
+    ):
+        params = [tc_geo_param, longitude_geo_param,
+                  latitude_geo_param, polarization_geo_param,
+                  tc_ssb_param, longitude_ssb_param,
+                  latitude_ssb_param, polarization_ssb_param]
+
+        for index in range(len(params)):
+            if params[index] is None:
+                key = list(self.default_params_name.keys())[index]
+                params[index] = self.default_params_name[key]
+
+        self.tc_geo_param = params[0]
+        self.longitude_geo_param = params[1]
+        self.latitude_geo_param = params[2]
+        self.polarization_geo_param = params[3]
+        self.tc_ssb_param = params[4]
+        self.longitude_ssb_param = params[5]
+        self.latitude_ssb_param = params[6]
+        self.polarization_ssb_param = params[7]
+        self._inputs = [self.tc_geo_param, self.longitude_geo_param,
+                        self.latitude_geo_param, self.polarization_geo_param]
+        self._outputs = [self.tc_ssb_param, self.longitude_ssb_param,
+                         self.latitude_ssb_param, self.polarization_ssb_param]
+
+        super(GEOToSSB, self).__init__()
+
+    def transform(self, maps):
+        """This function transforms arrival time, sky localization,
+        and polarization angle in the geocentric frame to the corresponding
+        values in the SSB frame.
+
+        Parameters
+        ----------
+        maps : a mapping object
+
+        Returns
+        -------
+        out : dict
+            A dict with key as parameter name and value as numpy.array or float
+            of transformed values.
+        """
+        out = {}
+        out[self.tc_ssb_param], out[self.longitude_ssb_param], \
+            out[self.latitude_ssb_param], out[self.polarization_ssb_param] = \
+            coordinates.geo_to_ssb(
+                maps[self.tc_geo_param], maps[self.longitude_geo_param],
+                maps[self.latitude_geo_param], maps[self.polarization_geo_param]
+                )
+        return self.format_output(maps, out)
+
+    def inverse_transform(self, maps):
+        """This function transforms arrival time, sky localization,
+        and polarization angle in the SSB frame to the corresponding
+        values in the geocentric frame.
+
+        Parameters
+        ----------
+        maps : a mapping object
+
+        Returns
+        -------
+        out : dict
+            A dict with key as parameter name and value as numpy.array or float
+            of transformed values.
+        """
+        out = {}
+        out[self.tc_geo_param], out[self.longitude_geo_param], \
+            out[self.latitude_geo_param], out[self.polarization_geo_param] = \
+            coordinates.ssb_to_geo(
+                maps[self.tc_ssb_param], maps[self.longitude_ssb_param],
+                maps[self.latitude_ssb_param], maps[self.polarization_ssb_param]
+                )
+        return self.format_output(maps, out)
+
+    @classmethod
+    def from_config(cls, cp, section, outputs):
+        tag = outputs
+        skip_opts = []
+        additional_opts = {}
+
+        # get custom variable names
+        variables = {
+            'tc-geo': cls.default_params_name['default_tc_geo'],
+            'longitude-geo': cls.default_params_name['default_longitude_geo'],
+            'latitude-geo': cls.default_params_name['default_latitude_geo'],
+            'polarization-geo': cls.default_params_name[
+                                    'default_polarization_geo'],
+            'tc-ssb': cls.default_params_name['default_tc_ssb'],
+            'longitude-ssb': cls.default_params_name['default_longitude_ssb'],
+            'latitude-ssb': cls.default_params_name['default_latitude_ssb'],
+            'polarization-ssb': cls.default_params_name[
+                                    'default_polarization_ssb']
+        }
+        for param_name in variables.keys():
+            name_underline = param_name.replace('-', '_')
+            if cp.has_option("-".join([section, outputs]), param_name):
+                skip_opts.append(param_name)
+                additional_opts.update(
+                    {name_underline+'_param': cp.get_opt_tag(
+                     section, param_name, tag)})
+            else:
+                additional_opts.update(
+                    {name_underline+'_param': variables[param_name]})
+
+        return super(GEOToSSB, cls).from_config(
+            cp, section, outputs, skip_opts=skip_opts,
+            additional_opts=additional_opts
+        )
+
+
+class LISAToSSB(BaseTransform):
+    """Converts arrival time, sky localization, and polarization angle in the
+    LISA frame to the corresponding values in the SSB frame."""
+
+    name = "lisa_to_ssb"
+
+    default_params_name = {
+        'default_tc_lisa': parameters.tc,
+        'default_longitude_lisa': parameters.eclipticlongitude,
+        'default_latitude_lisa': parameters.eclipticlatitude,
+        'default_polarization_lisa': parameters.polarization,
+        'default_tc_ssb': parameters.tc,
+        'default_longitude_ssb': parameters.eclipticlongitude,
+        'default_latitude_ssb': parameters.eclipticlatitude,
+        'default_polarization_ssb': parameters.polarization
+    }
+
+    def __init__(
+        self, tc_lisa_param=None, longitude_lisa_param=None,
+        latitude_lisa_param=None, polarization_lisa_param=None,
+        tc_ssb_param=None, longitude_ssb_param=None,
+        latitude_ssb_param=None, polarization_ssb_param=None
+    ):
+        params = [tc_lisa_param, longitude_lisa_param,
+                  latitude_lisa_param, polarization_lisa_param,
+                  tc_ssb_param, longitude_ssb_param,
+                  latitude_ssb_param, polarization_ssb_param]
+        for index in range(len(params)):
+            if params[index] is None:
+                key = list(self.default_params_name.keys())[index]
+                params[index] = self.default_params_name[key]
+
+        self.tc_lisa_param = params[0]
+        self.longitude_lisa_param = params[1]
+        self.latitude_lisa_param = params[2]
+        self.polarization_lisa_param = params[3]
+        self.tc_ssb_param = params[4]
+        self.longitude_ssb_param = params[5]
+        self.latitude_ssb_param = params[6]
+        self.polarization_ssb_param = params[7]
+        self._inputs = [self.tc_lisa_param, self.longitude_lisa_param,
+                        self.latitude_lisa_param, self.polarization_lisa_param]
+        self._outputs = [self.tc_ssb_param, self.longitude_ssb_param,
+                         self.latitude_ssb_param, self.polarization_ssb_param]
+        super(LISAToSSB, self).__init__()
+
+    def transform(self, maps):
+        """This function transforms arrival time, sky localization,
+        and polarization angle in the LISA frame to the corresponding
+        values in the SSB frame.
+
+        Parameters
+        ----------
+        maps : a mapping object
+
+        Returns
+        -------
+        out : dict
+            A dict with key as parameter name and value as numpy.array or float
+            of transformed values.
+        """
+        out = {}
+        out[self.tc_ssb_param], out[self.longitude_ssb_param], \
+            out[self.latitude_ssb_param], out[self.polarization_ssb_param] = \
+            coordinates.lisa_to_ssb(
+                maps[self.tc_lisa_param], maps[self.longitude_lisa_param],
+                maps[self.latitude_lisa_param], maps[self.polarization_lisa_param]
+                )
+        return self.format_output(maps, out)
+
+    def inverse_transform(self, maps):
+        """This function transforms arrival time, sky localization,
+        and polarization angle in the SSB frame to the corresponding
+        values in the LISA frame.
+
+        Parameters
+        ----------
+        maps : a mapping object
+
+        Returns
+        -------
+        out : dict
+            A dict with key as parameter name and value as numpy.array or float
+            of transformed values.
+        """
+        out = {}
+        out[self.tc_lisa_param], out[self.longitude_lisa_param], \
+            out[self.latitude_lisa_param], \
+            out[self.polarization_lisa_param] = \
+            coordinates.ssb_to_lisa(
+                maps[self.tc_ssb_param], maps[self.longitude_ssb_param],
+                maps[self.latitude_ssb_param], maps[self.polarization_ssb_param]
+                )
+        return self.format_output(maps, out)
+
+    @classmethod
+    def from_config(cls, cp, section, outputs):
+        tag = outputs
+        skip_opts = []
+        additional_opts = {}
+
+        # get custom variable names
+        variables = {
+            'tc-lisa': cls.default_params_name['default_tc_lisa'],
+            'longitude-lisa': cls.default_params_name[
+                                    'default_longitude_lisa'],
+            'latitude-lisa': cls.default_params_name['default_latitude_lisa'],
+            'polarization-lisa': cls.default_params_name[
+                                    'default_polarization_lisa'],
+            'tc-ssb': cls.default_params_name['default_tc_ssb'],
+            'longitude-ssb': cls.default_params_name['default_longitude_ssb'],
+            'latitude-ssb': cls.default_params_name['default_latitude_ssb'],
+            'polarization-ssb': cls.default_params_name[
+                                    'default_polarization_ssb']
+        }
+        for param_name in variables.keys():
+            name_underline = param_name.replace('-', '_')
+            if cp.has_option("-".join([section, outputs]), param_name):
+                skip_opts.append(param_name)
+                additional_opts.update(
+                    {name_underline+'_param': cp.get_opt_tag(
+                     section, param_name, tag)})
+            else:
+                additional_opts.update(
+                    {name_underline+'_param': variables[param_name]})
+
+        return super(LISAToSSB, cls).from_config(
+            cp, section, outputs, skip_opts=skip_opts,
+            additional_opts=additional_opts
+        )
+
+
+class LISAToGEO(BaseTransform):
+    """Converts arrival time, sky localization, and polarization angle in the
+    LISA frame to the corresponding values in the geocentric frame."""
+
+    name = "lisa_to_geo"
+
+    default_params_name = {
+        'default_tc_lisa': parameters.tc,
+        'default_longitude_lisa': parameters.eclipticlongitude,
+        'default_latitude_lisa': parameters.eclipticlatitude,
+        'default_polarization_lisa': parameters.polarization,
+        'default_tc_geo': parameters.tc,
+        'default_longitude_geo': parameters.ra,
+        'default_latitude_geo': parameters.dec,
+        'default_polarization_geo': parameters.polarization
+    }
+
+    def __init__(
+        self, tc_lisa_param=None, longitude_lisa_param=None,
+        latitude_lisa_param=None, polarization_lisa_param=None,
+        tc_geo_param=None, longitude_geo_param=None,
+        latitude_geo_param=None, polarization_geo_param=None
+    ):
+        params = [tc_lisa_param, longitude_lisa_param,
+                  latitude_lisa_param, polarization_lisa_param,
+                  tc_geo_param, longitude_geo_param,
+                  latitude_geo_param, polarization_geo_param]
+        for index in range(len(params)):
+            if params[index] is None:
+                key = list(self.default_params_name.keys())[index]
+                params[index] = self.default_params_name[key]
+
+        self.tc_lisa_param = params[0]
+        self.longitude_lisa_param = params[1]
+        self.latitude_lisa_param = params[2]
+        self.polarization_lisa_param = params[3]
+        self.tc_geo_param = params[4]
+        self.longitude_geo_param = params[5]
+        self.latitude_geo_param = params[6]
+        self.polarization_geo_param = params[7]
+        self._inputs = [self.tc_lisa_param, self.longitude_lisa_param,
+                        self.latitude_lisa_param, self.polarization_lisa_param]
+        self._outputs = [self.tc_geo_param, self.longitude_geo_param,
+                         self.latitude_geo_param, self.polarization_geo_param]
+        super(LISAToGEO, self).__init__()
+
+    def transform(self, maps):
+        """This function transforms arrival time, sky localization,
+        and polarization angle in the LISA frame to the corresponding
+        values in the geocentric frame.
+
+        Parameters
+        ----------
+        maps : a mapping object
+
+        Returns
+        -------
+        out : dict
+            A dict with key as parameter name and value as numpy.array or float
+            of transformed values.
+        """
+        out = {}
+        out[self.tc_geo_param], out[self.longitude_geo_param], \
+            out[self.latitude_geo_param], out[self.polarization_geo_param] = \
+            coordinates.lisa_to_geo(
+                maps[self.tc_lisa_param], maps[self.longitude_lisa_param],
+                maps[self.latitude_lisa_param], maps[self.polarization_lisa_param]
+                )
+        return self.format_output(maps, out)
+
+    def inverse_transform(self, maps):
+        """This function transforms arrival time, sky localization,
+        and polarization angle in the geocentric frame to the corresponding
+        values in the LISA frame.
+
+        Parameters
+        ----------
+        maps : a mapping object
+
+        Returns
+        -------
+        out : dict
+            A dict with key as parameter name and value as numpy.array or float
+            of transformed values.
+        """
+        out = {}
+        out[self.tc_lisa_param], out[self.longitude_lisa_param], \
+            out[self.latitude_lisa_param], \
+            out[self.polarization_lisa_param] = \
+            coordinates.geo_to_lisa(
+                maps[self.tc_geo_param], maps[self.longitude_geo_param],
+                maps[self.latitude_geo_param], maps[self.polarization_geo_param]
+                )
+        return self.format_output(maps, out)
+
+    @classmethod
+    def from_config(cls, cp, section, outputs):
+        tag = outputs
+        skip_opts = []
+        additional_opts = {}
+
+        # get custom variable names
+        variables = {
+            'tc-lisa': cls.default_params_name['default_tc_lisa'],
+            'longitude-lisa': cls.default_params_name[
+                                    'default_longitude_lisa'],
+            'latitude-lisa': cls.default_params_name['default_latitude_lisa'],
+            'polarization-lisa': cls.default_params_name[
+                                    'default_polarization_lisa'],
+            'tc-geo': cls.default_params_name['default_tc_geo'],
+            'longitude-geo': cls.default_params_name['default_longitude_geo'],
+            'latitude-geo': cls.default_params_name['default_latitude_geo'],
+            'polarization-geo': cls.default_params_name[
+                                    'default_polarization_geo']
+        }
+        for param_name in variables.keys():
+            name_underline = param_name.replace('-', '_')
+            if cp.has_option("-".join([section, outputs]), param_name):
+                skip_opts.append(param_name)
+                additional_opts.update(
+                    {name_underline+'_param': cp.get_opt_tag(
+                     section, param_name, tag)})
+            else:
+                additional_opts.update(
+                    {name_underline+'_param': variables[param_name]})
+
+        return super(LISAToGEO, cls).from_config(
+            cp, section, outputs, skip_opts=skip_opts,
+            additional_opts=additional_opts
+        )
+
+
 class Log(BaseTransform):
     """Applies a log transform from an `inputvar` parameter to an `outputvar`
     parameter. This is the inverse of the exponent transform.
@@ -2060,6 +2548,117 @@ class ChiPToCartesianSpin(CartesianSpinToChiP):
     inverse_jacobian = inverse.jacobian
 
 
+class SSBToGEO(GEOToSSB):
+    """The inverse of GEOToSSB."""
+
+    name = "ssb_to_geo"
+    inverse = GEOToSSB
+    transform = inverse.inverse_transform
+    inverse_transform = inverse.transform
+
+    def __init__(
+        self, tc_geo_param=None, longitude_geo_param=None,
+        latitude_geo_param=None, polarization_geo_param=None,
+        tc_ssb_param=None, longitude_ssb_param=None,
+        latitude_ssb_param=None, polarization_ssb_param=None
+    ):
+        params = [tc_geo_param, longitude_geo_param,
+                  latitude_geo_param, polarization_geo_param,
+                  tc_ssb_param, longitude_ssb_param,
+                  latitude_ssb_param, polarization_ssb_param]
+        for index in range(len(params)):
+            if params[index] is None:
+                key = list(self.default_params_name.keys())[index]
+                params[index] = self.default_params_name[key]
+
+        self.tc_geo_param = params[0]
+        self.longitude_geo_param = params[1]
+        self.latitude_geo_param = params[2]
+        self.polarization_geo_param = params[3]
+        self.tc_ssb_param = params[4]
+        self.longitude_ssb_param = params[5]
+        self.latitude_ssb_param = params[6]
+        self.polarization_ssb_param = params[7]
+        self._inputs = [self.tc_ssb_param, self.longitude_ssb_param,
+                        self.latitude_ssb_param, self.polarization_ssb_param]
+        self._outputs = [self.tc_geo_param, self.longitude_geo_param,
+                         self.latitude_geo_param, self.polarization_geo_param]
+
+
+class SSBToLISA(LISAToSSB):
+    """The inverse of LISAToSSB."""
+
+    name = "ssb_to_lisa"
+    inverse = LISAToSSB
+    transform = inverse.inverse_transform
+    inverse_transform = inverse.transform
+
+    def __init__(
+        self, tc_lisa_param=None, longitude_lisa_param=None,
+        latitude_lisa_param=None, polarization_lisa_param=None,
+        tc_ssb_param=None, longitude_ssb_param=None,
+        latitude_ssb_param=None, polarization_ssb_param=None
+    ):
+        params = [tc_lisa_param, longitude_lisa_param,
+                  latitude_lisa_param, polarization_lisa_param,
+                  tc_ssb_param, longitude_ssb_param,
+                  latitude_ssb_param, polarization_ssb_param]
+        for index in range(len(params)):
+            if params[index] is None:
+                key = list(self.default_params_name.keys())[index]
+                params[index] = self.default_params_name[key]
+
+        self.tc_lisa_param = params[0]
+        self.longitude_lisa_param = params[1]
+        self.latitude_lisa_param = params[2]
+        self.polarization_lisa_param = params[3]
+        self.tc_ssb_param = params[4]
+        self.longitude_ssb_param = params[5]
+        self.latitude_ssb_param = params[6]
+        self.polarization_ssb_param = params[7]
+        self._inputs = [self.tc_ssb_param, self.longitude_ssb_param,
+                        self.latitude_ssb_param, self.polarization_ssb_param]
+        self._outputs = [self.tc_lisa_param, self.longitude_lisa_param,
+                         self.latitude_lisa_param, self.polarization_lisa_param]
+
+
+class GEOToLISA(LISAToGEO):
+    """The inverse of LISAToGEO."""
+
+    name = "geo_to_lisa"
+    inverse = LISAToGEO
+    transform = inverse.inverse_transform
+    inverse_transform = inverse.transform
+
+    def __init__(
+        self, tc_lisa_param=None, longitude_lisa_param=None,
+        latitude_lisa_param=None, polarization_lisa_param=None,
+        tc_geo_param=None, longitude_geo_param=None,
+        latitude_geo_param=None, polarization_geo_param=None
+    ):
+        params = [tc_lisa_param, longitude_lisa_param,
+                  latitude_lisa_param, polarization_lisa_param,
+                  tc_geo_param, longitude_geo_param,
+                  latitude_geo_param, polarization_geo_param]
+        for index in range(len(params)):
+            if params[index] is None:
+                key = list(self.default_params_name.keys())[index]
+                params[index] = self.default_params_name[key]
+
+        self.tc_lisa_param = params[0]
+        self.longitude_lisa_param = params[1]
+        self.latitude_lisa_param = params[2]
+        self.polarization_lisa_param = params[3]
+        self.tc_geo_param = params[4]
+        self.longitude_geo_param = params[5]
+        self.latitude_geo_param = params[6]
+        self.polarization_geo_param = params[7]
+        self._inputs = [self.tc_geo_param, self.longitude_geo_param,
+                        self.latitude_geo_param, self.polarization_geo_param]
+        self._outputs = [self.tc_lisa_param, self.longitude_lisa_param,
+                         self.latitude_lisa_param, self.polarization_lisa_param]
+
+
 class Exponent(Log):
     """Applies an exponent transform to an `inputvar` parameter.
 
@@ -2202,6 +2801,9 @@ PrecessionMassSpinToCartesianSpin.inverse = CartesianSpinToPrecessionMassSpin
 ChiPToCartesianSpin.inverse = CartesianSpinToChiP
 Log.inverse = Exponent
 Logit.inverse = Logistic
+GEOToSSB.inverse = SSBToGEO
+LISAToSSB.inverse = SSBToLISA
+LISAToGEO.inverse = GEOToLISA
 
 
 #
@@ -2215,6 +2817,7 @@ Logit.inverse = Logistic
 # dictionary of all transforms
 transforms = {
     CustomTransform.name: CustomTransform,
+    CustomTransformMultiOutputs.name: CustomTransformMultiOutputs,
     MchirpQToMass1Mass2.name: MchirpQToMass1Mass2,
     Mass1Mass2ToMchirpQ.name: Mass1Mass2ToMchirpQ,
     MchirpEtaToMass1Mass2.name: MchirpEtaToMass1Mass2,
@@ -2241,6 +2844,12 @@ transforms = {
     LambdaFromTOVFile.name: LambdaFromTOVFile,
     LambdaFromMultipleTOVFiles.name: LambdaFromMultipleTOVFiles,
     AlignTotalSpin.name: AlignTotalSpin,
+    GEOToSSB.name: GEOToSSB,
+    SSBToGEO.name: SSBToGEO,
+    LISAToSSB.name: LISAToSSB,
+    SSBToLISA.name: SSBToLISA,
+    LISAToGEO.name: LISAToGEO,
+    GEOToLISA.name: GEOToLISA,
 }
 
 # standard CBC transforms: these are transforms that do not require input
@@ -2269,6 +2878,9 @@ common_cbc_forward_transforms = [
     PrecessionMassSpinToCartesianSpin(),
     ChiPToCartesianSpin(),
     ChirpDistanceToDistance(),
+    GEOToSSB(),
+    LISAToSSB(),
+    LISAToGEO(),
 ]
 common_cbc_inverse_transforms = [
     _t.inverse()

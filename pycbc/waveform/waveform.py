@@ -435,6 +435,7 @@ def props(obj, **kwargs):
     input_params = parse_mode_array(input_params)
     return input_params
 
+
 def check_args(args, required_args):
     """ check that required args are given """
     missing = []
@@ -525,6 +526,8 @@ def get_fd_waveform_sequence(template=None, **kwds):
         required = wav_gen.required
     else:
         required = parameters.fd_required
+    if not isinstance(input_params['sample_points'], Array):
+        input_params['sample_points'] = Array(input_params['sample_points'])
     check_args(input_params, required)
     return wav_gen(**input_params)
 
@@ -547,8 +550,6 @@ def get_fd_det_waveform_sequence(template=None, **kwds):
         channels, values are FrequencySeries.
     """
     input_params = props(template, **kwds)
-    input_params['delta_f'] = -1
-    input_params['f_lower'] = -1
     if input_params['approximant'] not in fd_det_sequence:
         raise ValueError("Approximant %s not available" %
                             (input_params['approximant']))
@@ -556,7 +557,7 @@ def get_fd_det_waveform_sequence(template=None, **kwds):
     if hasattr(wav_gen, 'required'):
         required = wav_gen.required
     else:
-        required = parameters.fd_required
+        required = parameters.fd_det_sequence_required
     check_args(input_params, required)
     return wav_gen(**input_params)
 
@@ -734,8 +735,6 @@ def get_fd_det_waveform(template=None, **kwargs):
         domain. Keys are requested data channels, values are FrequencySeries.
     """
     input_params = props(template, **kwargs)
-    if 'f_lower' not in input_params:
-        input_params['f_lower'] = -1
     if input_params['approximant'] not in fd_det:
         raise ValueError("Approximant %s not available" %
                             (input_params['approximant']))

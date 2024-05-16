@@ -12,16 +12,25 @@ most use cases. You can override individual details here. It should also be
 possible to implement a new site, but not sure how that would work in practice.
 """
 
+import logging
 import os.path
 import tempfile
 import urllib.parse
 from shutil import which
 from urllib.parse import urljoin
 from urllib.request import pathname2url
+
 from Pegasus.api import Directory, FileServer, Site, Operation, Namespace
 from Pegasus.api import Arch, OS, SiteCatalog
 
-from pycbc.version import last_release  # noqa
+from pycbc.version import last_release, version, release  # noqa
+
+logger = logging.getLogger('pycbc.workflow.pegasus_sites')
+
+if release == 'True':
+    sing_version = version
+else:
+    sing_version = last_release
 
 # NOTE urllib is weird. For some reason it only allows known schemes and will
 # give *wrong* results, rather then failing, if you use something like gsiftp
@@ -218,7 +227,7 @@ def add_osg_site(sitecat, cp):
                             "(HAS_LIGO_FRAMES =?= True) && "
                             "(IS_GLIDEIN =?= True)")
     cvmfs_loc = '"/cvmfs/singularity.opensciencegrid.org/pycbc/pycbc-el8:v'
-    cvmfs_loc += last_release + '"'
+    cvmfs_loc += sing_version + '"'
     site.add_profiles(Namespace.CONDOR, key="+SingularityImage",
                       value=cvmfs_loc)
     # On OSG failure rate is high

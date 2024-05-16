@@ -23,6 +23,7 @@ Stochastic aligned spin bank generator.
 import argparse
 import numpy
 import logging
+
 import pycbc
 import pycbc.version
 from pycbc import tmpltbank
@@ -45,8 +46,7 @@ parser = argparse.ArgumentParser(description=_desc,
 
 # Begin with code specific options
 parser.add_argument("--version", action="version", version=__version__)
-parser.add_argument("--verbose", action="store_true", default=False,
-                    help="verbose output")
+pycbc.add_common_pycbc_options(parser)
 parser.add_argument("-V", "--vary-fupper", action="store_true", default=False,
                     help="Use a variable upper frequency cutoff in laying "
                     "out the bank.  OPTIONAL.")
@@ -96,12 +96,7 @@ tmpltbank.insert_ethinca_metric_options(parser)
 
 opts = parser.parse_args()
 
-if opts.verbose:
-    log_level = logging.DEBUG
-else:
-    log_level = logging.WARN
-log_format='%(asctime)s %(message)s'
-logging.basicConfig(format=log_format, level=log_level)
+pycbc.init_logging(opts.verbose)
 
 # delete defaults for redundant options if not varying fupper
 if not opts.vary_fupper:
@@ -173,7 +168,7 @@ metricParams = tmpltbank.determine_eigen_directions(
     vary_fmax=(opts.vary_fupper or ethincaParams.doEthinca),
     vary_density=freqStep)
 
-logging.info("Identify limits of frequency.")
+logging.info("Identifying limits of frequency")
 
 # Choose the frequency values to use for metric calculation
 if opts.vary_fupper==False:
@@ -189,8 +184,11 @@ else:
     # total masses
     fs = numpy.array(list(metricParams.evals.keys()), dtype=float)
     fs.sort()
-    lowEve, highEve = tmpltbank.find_max_and_min_frequencies(\
-                              opts.bank_fupper_formula, massRangeParams, fs)
+    lowEve, highEve = tmpltbank.find_max_and_min_frequencies(
+        opts.bank_fupper_formula,
+        massRangeParams,
+        fs
+    )
     refFreq = lowEve
     fs = fs[fs >= lowEve]
     fs = fs[fs <= highEve]
@@ -205,12 +203,15 @@ evecsCVdict = {}
 evecsCVdict[refFreq] = evecsCV
 metricParams.evecsCV = evecsCVdict
 
-# Initialize the class for generating the partitioned bank
 logging.info("Initialize the PartitionedTmpltbank class")
 
-partitioned_bank_object = tmpltbank.PartitionedTmpltbank(massRangeParams,
-                               metricParams, refFreq, (opts.max_mismatch)**0.5,
-                               bin_range_check=1)
+partitioned_bank_object = tmpltbank.PartitionedTmpltbank(
+    massRangeParams,
+    metricParams,
+    refFreq,
+    opts.max_mismatch ** 0.5,
+    bin_range_check=1
+)
 
 # Initialise counters
 N = 0
@@ -231,11 +232,12 @@ while True:
         rMass1, rMass2, rSpin1z, rSpin2z = \
             tmpltbank.get_random_mass(100000, massRangeParams)
         if opts.vary_fupper:
-            mass_dict = {}
-            mass_dict['m1'] = rMass1
-            mass_dict['m2'] = rMass2
-            mass_dict['s1z'] = rSpin1z
-            mass_dict['s2z'] = rSpin2z
+            mass_dict = {
+                'mass1': rMass1,
+                'mass2': rMass2,
+                'spin1z': rSpin1z,
+                'spin2z': rSpin2z
+            }
             refEve = tmpltbank.return_nearest_cutoff(
                 opts.bank_fupper_formula, mass_dict, fs)
             lambdas = tmpltbank.get_chirp_params(rMass1, rMass2, rSpin1z,

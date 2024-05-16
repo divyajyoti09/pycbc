@@ -47,7 +47,7 @@ install_requires = setup_requires + [
     'tqdm',
     'setuptools',
     'gwdatafind',
-    'pegasus-wms.api >= 5.0.3',
+    'pegasus-wms.api >= 5.0.6',
     'python-ligo-lw >= 1.7.0',
     'ligo-segments',
     'lalsuite!=7.2',
@@ -72,10 +72,9 @@ def find_files(dirname, relpath=None):
 
 class cbuild_ext(_build_ext):
     def run(self):
-        import pkg_resources
-
         # At this point we can be sure pip has already installed numpy
-        numpy_incl = pkg_resources.resource_filename('numpy', 'core/include')
+        import numpy
+        numpy_incl = numpy.get_include()
 
         for ext in self.extensions:
             if (hasattr(ext, 'include_dirs') and
@@ -119,7 +118,7 @@ def get_version_info():
         vinfo = _version_helper.generate_git_version_info()
     except:
         vinfo = vdummy()
-        vinfo.version = '2.2.2dev'
+        vinfo.version = '2.4.dev1'
         vinfo.release = 'False'
 
     version_script = f"""# coding: utf-8
@@ -203,7 +202,7 @@ extras_require = {
         'scikit-cuda',
     ],
     'igwn': [
-        'ciecplib>=0.4.4',
+        'ciecplib>=0.7.0',
     ],
 }
 

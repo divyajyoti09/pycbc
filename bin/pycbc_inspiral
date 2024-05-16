@@ -16,19 +16,24 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-import sys, os, copy
-import logging, argparse, numpy, itertools
+import sys
+import os
+import copy
+import logging
+import argparse
+import numpy
+import itertools
+import time
+from multiprocessing import Pool
+
 import pycbc
 import pycbc.version
 from pycbc import vetoes, psd, waveform, strain, scheme, fft, DYN_RANGE_FAC, events
 from pycbc.vetoes.sgchisq import SingleDetSGChisq
 from pycbc.filter import MatchedFilterControl, make_frequency_series, qtransform
 from pycbc.types import TimeSeries, FrequencySeries, zeros, float32, complex64
-from multiprocessing import Pool
-import pycbc.version
 import pycbc.opt
 import pycbc.inject
-import time
 
 last_progress_update = -1.0
 
@@ -48,9 +53,8 @@ tstart = time.time()
 parser = argparse.ArgumentParser(usage='',
     description="Find single detector gravitational-wave triggers.")
 
+pycbc.add_common_pycbc_options(parser)
 parser.add_argument('--version', action=pycbc.version.Version)
-parser.add_argument("-V", "--verbose", action="store_true",
-                  help="print extra debugging information", default=False )
 parser.add_argument("--update-progress",
                   help="updates a file 'progress.txt' with a value 0 .. 1.0 when this amount of (filtering) progress was made",
                   type=float, default=0)
@@ -91,7 +95,7 @@ parser.add_argument("--cluster-function", choices=["findchirp", "symmetric"],
                     "'findchirp' uses a forward sliding window; 'symmetric' "
                     "will compare each window to the one before and after, keeping "
                     "only a local maximum.", default="findchirp")
-parser.add_argument("--cluster-window", type=float, default = -1,
+parser.add_argument("--cluster-window", type=float, default=0,
                     help="Length of clustering window in seconds."
                     " Set to 0 to disable clustering.")
 parser.add_argument("--bank-veto-bank-file", type=str, help="FIXME: ADD")
@@ -295,7 +299,7 @@ def template_triggers(t_num):
                                       out_vals['time_index'],
                                       opt.gps_start_time, opt.sample_rate)
         #print(idx, out_vals['time_index'])
-        
+
         out_vals_all.append(copy.deepcopy(out_vals))
         #print(out_vals_all)
     return out_vals_all, tparam
@@ -358,9 +362,10 @@ with ctx:
     if opt.psdvar_segment is not None:
         logging.info("Calculating PSD variation")
         psd_var = pycbc.psd.calc_filt_psd_variation(gwstrain, opt.psdvar_segment,
-                opt.psdvar_short_segment, opt.psdvar_long_segment, 
+                opt.psdvar_short_segment, opt.psdvar_long_segment,
                 opt.psdvar_psd_duration, opt.psdvar_psd_stride,
                 opt.psd_estimation, opt.psdvar_low_freq, opt.psdvar_high_freq)
+
 
     if opt.enable_q_transform:
         logging.info("Performing q-transform on analysis segments")
@@ -453,16 +458,16 @@ with ctx:
 
     tsetup = time.time() - tstart
     tcheckpoint = time.time()
-    
+
     tanalyze = list(range(tnum_start, len(bank)))
     n = opt.finalize_events_template_rate
     n = 1 if n is None else n
-    tchunks = [tanalyze[i:i + n] for i in range(0, len(tanalyze), n)] 
-    
+    tchunks = [tanalyze[i:i + n] for i in range(0, len(tanalyze), n)]
+
     mmap = map
     if opt.multiprocessing_nprocesses:
         mmap = Pool(opt.multiprocessing_nprocesses).map
-    
+
     for tchunk in tchunks:
         data = list(mmap(template_triggers, tchunk))
 
@@ -472,11 +477,11 @@ with ctx:
                 event_mgr.new_template(tmplt=tparam)
 
                 for edata in out_vals_all:
-                    event_mgr.add_template_events(names, [edata[n] for n in names])              
-                                    
+                    event_mgr.add_template_events(names, [edata[n] for n in names])
+
                 event_mgr.cluster_template_events("time_index", "snr", cluster_window)
                 event_mgr.finalize_template_events()
-        
+
         if opt.finalize_events_template_rate is not None:
             event_mgr.consolidate_events(opt, gwstrain=gwstrain)
 
@@ -488,7 +493,7 @@ with ctx:
         if opt.checkpoint_exit_maxtime and \
             (time.time() - tstart > opt.checkpoint_exit_maxtime):
             event_mgr.save_state(max(tchunk), opt.output + '.checkpoint')
-            sys.exit(opt.checkpoint_exit_code)           
+            sys.exit(opt.checkpoint_exit_code)
 
 event_mgr.consolidate_events(opt, gwstrain=gwstrain)
 event_mgr.finalize_events()
